@@ -6,10 +6,11 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
-st.set_page_config(page_title="Momentum 100 - Alpaca", layout="wide")
-
+st.set_page_config(page_title="Momentum 100", layout="wide")
 if 'running' not in st.session_state:
     st.session_state.running = False
+if 'result' not in st.session_state:
+    st.session_state.result = None
 
 st.title("Momentum 100 - Alpaca Fast")
 
@@ -31,16 +32,17 @@ def get_tickers():
 
 API_KEY = st.secrets.get("ALPACA_API_KEY", "")
 SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY", "")
-
 portfolio_value = st.sidebar.number_input("Portfolio Value $", value=250000.0, step=5000.0)
 run_date = st.date_input("List Date", value=date.today())
 
-# Placeholders
-error_placeholder = st.empty()
-warning_placeholder = st.empty()
-log_placeholder = st.empty()
+t400, t600 = get_tickers()
+st.caption(f"Universe {len(t400)} + {len(t600)}")
 
-def calc_alpaca(tickers, top_n, label, start_date, end_date, log_box):
+error_box = st.empty()
+warn_box = st.empty()
+log_box = st.empty()
+
+def calc_alpaca(tickers, top_n, label, sd, ed):
     results = []
     invalid = []
     prog = st.progress(0, text=f"Fetching {label}...")
@@ -48,75 +50,70 @@ def calc_alpaca(tickers, top_n, label, start_date, end_date, log_box):
     for batch_idx in range(0, len(tickers), 50):
         batch = tickers[batch_idx:batch_idx+50]
         if batch_idx % 20 == 0:
-            log_box.write(f"[{label}] Processing {batch_idx}/{len(tickers)} - {len(results)} valid so far...")
+            log_box.write(f"[{label}] {batch_idx}/{len(tickers)} - {len(results)} valid")
         try:
-            req = StockBarsRequest(symbol_or_symbols=batch, timeframe=TimeFrame.Day, start=start_date, end=end_date+timedelta(days=1), adjustment='all')
+            req = StockBarsRequest(symbol_or_symbols=batch, timeframe=TimeFrame.Day, start=sd, end=ed+timedelta(days=1), adjustment='all')
             bars = client.get_stock_bars(req).df
             if bars.empty:
-                for tk in batch:
-                    invalid.append(f"{tk} - no bars")
+                invalid.extend([f"{tk} - no bars" for tk in batch])
                 continue
             for tk in batch:
-                try:
-                    if tk not in bars.index.get_level_values(0):
-                        invalid.append(f"{tk} - not returned")
-                        continue
-                    hist = bars.loc[tk]
-                    if len(hist) < 180:
-                        invalid.append(f"{tk} - <180 days")
-                        continue
-                    ret = (float(hist['close'].iloc[-1]) / float(hist['close'].iloc[0])) - 1
-                    price = float(hist['close'].iloc[-1])
-                    results.append({'Ticker': tk, 'Price': price, '12Mo Return %': ret*100, 'Float Mcap': 1e9*(1+ret)})
-                except Exception as e:
-                    invalid.append(f"{tk} - {str(e)[:60]}")
+                if tk not in bars.index.get_level_values(0):
+                    invalid.append(f"{tk} - not returned")
+                    continue
+                hist = bars.loc[tk]
+                if len(hist) < 180:
+                    invalid.append(f"{tk} - <180d")
+                    continue
+                ret = (float(hist['close'].iloc[-1])/float(hist['close'].iloc[0]))-1
+                price = float(hist['close'].iloc[-1])
+                results.append({'Ticker':tk,'Price':price,'12Mo Return %':ret*100,'Float Mcap':1e9*(1+ret)})
         except Exception as e:
-            warning_placeholder.warning(f"Batch {batch_idx//50+1} retry: {str(e)[:100]}")
-            for tk in batch:
-                invalid.append(f"{tk} - batch error")
-        prog.progress(min((batch_idx+50)/len(tickers), 1.0))
+            warn_box.warning(f"Batch error: {str(e)[:120]}")
+            invalid.extend([f"{tk} - batch error" for tk in batch])
+        prog.progress(min((batch_idx+50)/len(tickers),1.0))
     prog.empty()
-    log_box.write(f"[{label}] Done: {len(results)} valid, {len(invalid)} invalid")
     df = pd.DataFrame(results).sort_values('12Mo Return %', ascending=False).head(top_n) if results else pd.DataFrame()
     return df, invalid
 
-t400, t600 = get_tickers()
-st.caption(f"Universe {len(t400)} + {len(t600)}")
-
-# BUTTON ALWAYS VISIBLE - disabled only while running
-button_disabled = st.session_state.running
-if st.button("Calculate Momentum 100 - Alpaca", type="primary", disabled=button_disabled):
+# BUTTON - disabled while running
+if st.button("Calculate Momentum 100 - Alpaca", type="primary", disabled=st.session_state.running):
     if not API_KEY or not SECRET_KEY:
-        error_placeholder.error("Add Alpaca keys in Streamlit > Settings > Secrets first! See instructions.")
-        st.session_state.running = False
+        error_box.error("Add ALPACA_API_KEY and ALPACA_SECRET_KEY in Streamlit > Settings > Secrets")
     else:
         st.session_state.running = True
-        error_placeholder.empty()
-        warning_placeholder.empty()
+        st.session_state.result = None
+        error_box.empty()
+        warn_box.empty()
         try:
             sd = datetime.combine(run_date - timedelta(days=395), datetime.min.time())
             ed = datetime.combine(run_date, datetime.min.time())
-            df400, bad400 = calc_alpaca(t400[:100], 40, "S&P 400", sd, ed, log_placeholder)
-            df600, bad600 = calc_alpaca(t600[:150], 60, "S&P 600", sd, ed, log_placeholder)
+            df400, bad400 = calc_alpaca(t400[:100], 40, "S&P 400", sd, ed)
+            df600, bad600 = calc_alpaca(t600[:150], 60, "S&P 600", sd, ed)
             combined = pd.concat([df400, df600])
             if combined.empty:
-                error_placeholder.error("No data returned - check Alpaca keys")
+                error_box.error("No data - check Alpaca keys or try again")
             else:
                 combined['Weight %'] = combined['Float Mcap']/combined['Float Mcap'].sum()*100
                 combined['Position $'] = combined['Float Mcap']/combined['Float Mcap'].sum()*portfolio_value
                 combined['Shares'] = (combined['Position $']/combined['Price']).astype(int)
                 combined = combined.sort_values('Weight %', ascending=False).reset_index(drop=True)
-                # Clear warnings/errors on success
-                error_placeholder.empty()
-                warning_placeholder.empty()
-                log_placeholder.empty()
-                st.success(f"Ready - {len(combined)} stocks")
-                st.dataframe(combined[['Ticker','Price','12Mo Return %','Weight %','Position $','Shares']], use_container_width=True)
-                with st.expander(f"Invalid tickers: {len(bad400+bad600)}"):
-                    st.dataframe(pd.DataFrame(bad400+bad600, columns=["Ticker - Reason"]), use_container_width=True)
-                st.download_button("Download CSV", combined.to_csv(index=False).encode('utf-8'), f"momentum100_{run_date}.csv", "text/csv", type="primary")
+                # Save result so it doesn't disappear
+                st.session_state.result = (combined, bad400+bad600)
+                # Clear warnings on success
+                error_box.empty()
+                warn_box.empty()
+                log_box.empty()
         except Exception as e:
-            error_placeholder.error(f"Error: {e}")
+            error_box.error(f"Error: {e}")
         finally:
             st.session_state.running = False
-            st.rerun()
+
+# SHOW RESULT IF EXISTS - stays visible
+if st.session_state.result:
+    combined, bad = st.session_state.result
+    st.success(f"Ready - {len(combined)} stocks | ${portfolio_value:,.0f}")
+    st.dataframe(combined[['Ticker','Price','12Mo Return %','Weight %','Position $','Shares']], use_container_width=True, hide_index=True)
+    with st.expander(f"Invalid tickers: {len(bad)}"):
+        st.dataframe(pd.DataFrame(bad, columns=["Reason"]), use_container_width=True)
+    st.download_button("Download CSV", combined.to_csv(index=False).encode('utf-8'), f"momentum100_{run_date}.csv", "text/csv", type="primary")
