@@ -1,7 +1,6 @@
 streamlit
-yfinance
+yfinance==0.2.48
 pandas
-lxml
 requests
-sendgrid
-openpyxl
+lxml
+curl-cffi
