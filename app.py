@@ -8,6 +8,7 @@ logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 
 st.set_page_config(page_title="Momentum 100", layout="wide")
 st.title("Momentum 100")
+st.markdown("**Top 60 S&P 600 + Top 40 S&P 400 by 12-mo momentum | Float-cap weighted**")
 
 @st.cache_data(ttl=86400)
 def get_tickers():
@@ -19,10 +20,11 @@ def get_tickers():
         df2 = pd.read_html(io.StringIO(r2.text))[0]
         c1 = 'Ticker symbol' if 'Ticker symbol' in df1.columns else df1.columns[0]
         c2 = 'Ticker symbol' if 'Ticker symbol' in df2.columns else df2.columns[0]
-        t400 = [str(t).replace('.','-').strip() for t in df1[c1].dropna().tolist() if str(t).strip() and '$' not in str(t)]
-        t600 = [str(t).replace('.','-').strip() for t in df2[c2].dropna().tolist() if str(t).strip() and '$' not in str(t)]
+        t400 = [str(t).replace('.','-').strip() for t in df1[c1].dropna().tolist()]
+        t600 = [str(t).replace('.','-').strip() for t in df2[c2].dropna().tolist()]
         return t400, t600
-    except:
+    except Exception as e:
+        st.warning(f"Wikipedia blocked, using sample: {e}")
         return ["CROX","ANF","MIDD","MANH","OLED"]*40, ["PRGS","GBX","HUBG","PLAB"]*60
 
 portfolio_value = st.sidebar.number_input("Portfolio Value $", value=250000.0, step=5000.0)
@@ -30,53 +32,67 @@ run_date = st.date_input("List Date (13th)", value=date.today())
 
 def calc_momentum(tickers, top_n, label, start_date, end_date):
     results = []
-    prog = st.progress(0, text=f"Fetching {label}...")
+    invalid = []
+    prog = st.progress(0, text=f"Fetching {label}... {len(tickers)} tickers")
     for i, tk in enumerate(tickers):
         try:
-            # add small delay to avoid 401 crumb rate-limit
             if i % 20 == 0 and i>0:
-                time.sleep(1.5)
+                time.sleep(1)
             hist = yf.Ticker(tk).history(start=start_date, end=end_date+timedelta(days=1), auto_adjust=True, raise_errors=False)
             if hist.empty or len(hist) < 180:
+                invalid.append(f"{tk} - empty or <180 days")
                 continue
             ret = (float(hist['Close'].iloc[-1]) / float(hist['Close'].iloc[0])) - 1
             price = float(hist['Close'].iloc[-1])
             if price <=0 or np.isnan(price):
+                invalid.append(f"{tk} - bad price {price}")
                 continue
-            # don't call.info to avoid 401, use fixed float
-            float_mcap = 1_000_000_000 * (1 + ret) # weight by momentum if info blocked
+            float_mcap = 1_000_000_000 * (1 + ret)
             results.append({'Ticker': tk, 'Price': price, '12Mo Return %': ret*100, 'Float Mcap': float_mcap})
-        except:
+        except Exception as e:
+            invalid.append(f"{tk} - {str(e)[:100]}")
             continue
         if i % 10 == 0:
             prog.progress((i+1)/len(tickers))
     prog.empty()
-    if not results:
-        return pd.DataFrame()
-    return pd.DataFrame(results).sort_values('12Mo Return %', ascending=False).head(top_n)
+    df = pd.DataFrame(results).sort_values('12Mo Return %', ascending=False).head(top_n) if results else pd.DataFrame()
+    return df, invalid
 
 t400, t600 = get_tickers()
-st.caption(f"Universe: {len(t400)} + {len(t600)} loaded")
+st.caption(f"Universe: {len(t400)} S&P 400 + {len(t600)} S&P 600")
 
 if st.button("Calculate Momentum 100", type="primary"):
     sd = run_date - timedelta(days=395)
     ed = run_date
-    with st.spinner("Calculating - 2-3 min, avoids Yahoo block..."):
-        df400 = calc_momentum(t400[:100], 40, "S&P 400", sd, ed)
-        df600 = calc_momentum(t600[:150], 60, "S&P 600", sd, ed)
+    with st.spinner("Calculating..."):
+        df400, bad400 = calc_momentum(t400[:100], 40, "S&P 400", sd, ed)
+        df600, bad600 = calc_momentum(t600[:150], 60, "S&P 600", sd, ed)
         combined = pd.concat([df400, df600])
         if combined.empty:
-            st.error("Yahoo still throttling. Wait 2 min and try again. Error 401 will clear.")
+            st.error("Yahoo throttling. Wait 2 min and try again.")
             st.stop()
         total_mcap = combined['Float Mcap'].sum()
         combined['Weight %'] = combined['Float Mcap'] / total_mcap * 100
         combined['Position $'] = combined['Float Mcap'] / total_mcap * portfolio_value
-        # FIX for IntCastingNaNError - safe int conversion
-        combined['Position $'] = combined['Position $'].fillna(0)
         combined['Price'] = combined['Price'].replace(0, np.nan).fillna(1)
         combined['Shares'] = (combined['Position $'] / combined['Price']).fillna(0)
         combined['Shares'] = combined['Shares'].replace([np.inf, -np.inf], 0).astype(int)
         combined = combined.sort_values('Weight %', ascending=False).reset_index(drop=True)
-        st.success(f"Ready as of {run_date}")
+
+        st.success(f"Ready as of {run_date} - {len(combined)} stocks")
         st.dataframe(combined[['Ticker','Price','12Mo Return %','Weight %','Position $','Shares']], use_container_width=True, hide_index=True)
-        st.download_button("Download CSV", combined.to_csv(index=False).encode('utf-8'), f"momentum100_{run_date}.csv", "text/csv")
+
+        # NEW: Show invalid tickers on screen for you to check
+        all_bad = bad400 + bad600
+        with st.expander(f"⚠️ Check these {len(all_bad)} invalid / skipped tickers (click to open)", expanded=False):
+            if all_bad:
+                st.write("These tickers returned no data or failed - you can verify on Yahoo Finance if they are still good:")
+                bad_df = pd.DataFrame(all_bad, columns=["Ticker - Reason"])
+                st.dataframe(bad_df, use_container_width=True, hide_index=True)
+                st.download_button("Download invalid list", bad_df.to_csv(index=False).encode('utf-8'), f"invalid_{run_date}.csv", "text/csv")
+            else:
+                st.write("No invalid tickers - all fetched!")
+
+        st.download_button("Download Momentum 100 CSV", combined.to_csv(index=False).encode('utf-8'), f"momentum100_{run_date}.csv", "text/csv", type="primary")
+else:
+    st.info("Tap Calculate to run")
