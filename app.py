@@ -19,8 +19,8 @@ def get_tickers():
         df2 = pd.read_html(io.StringIO(r2.text))[0]
         c1 = 'Ticker symbol' if 'Ticker symbol' in df1.columns else df1.columns[0]
         c2 = 'Ticker symbol' if 'Ticker symbol' in df2.columns else df2.columns[0]
-        t400 = [str(t).replace('.','-').strip() for t in df1[c1].dropna().tolist()]
-        t600 = [str(t).replace('.','-').strip() for t in df2[c2].dropna().tolist()]
+        t400 = [str(t).replace('.','-').strip() for t in df1[c1].dropna().tolist() if str(t).strip() and '$' not in str(t)]
+        t600 = [str(t).replace('.','-').strip() for t in df2[c2].dropna().tolist() if str(t).strip() and '$' not in str(t)]
         return t400, t600
     except:
         return ["CROX","ANF","MIDD","MANH","OLED"]*40, ["PRGS","GBX","HUBG","PLAB"]*60
