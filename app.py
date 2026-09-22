@@ -8,7 +8,6 @@ from alpaca.data.timeframe import TimeFrame
 
 st.set_page_config(page_title="Momentum 100 - Alpaca", layout="wide")
 
-# State to disable button
 if 'running' not in st.session_state:
     st.session_state.running = False
 
@@ -33,24 +32,19 @@ def get_tickers():
 API_KEY = st.secrets.get("ALPACA_API_KEY", "")
 SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY", "")
 
-# Placeholders that we can clear when finished
+portfolio_value = st.sidebar.number_input("Portfolio Value $", value=250000.0, step=5000.0)
+run_date = st.date_input("List Date", value=date.today())
+
+# Placeholders
 error_placeholder = st.empty()
 warning_placeholder = st.empty()
 log_placeholder = st.empty()
-
-if not API_KEY:
-    error_placeholder.error("Add Alpaca keys in Streamlit > Settings > Secrets first!")
-    st.stop()
-
-client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
-
-portfolio_value = st.sidebar.number_input("Portfolio Value $", value=250000.0, step=5000.0)
-run_date = st.date_input("List Date", value=date.today())
 
 def calc_alpaca(tickers, top_n, label, start_date, end_date, log_box):
     results = []
     invalid = []
     prog = st.progress(0, text=f"Fetching {label}...")
+    client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
     for batch_idx in range(0, len(tickers), 50):
         batch = tickers[batch_idx:batch_idx+50]
         if batch_idx % 20 == 0:
@@ -83,3 +77,46 @@ def calc_alpaca(tickers, top_n, label, start_date, end_date, log_box):
         prog.progress(min((batch_idx+50)/len(tickers), 1.0))
     prog.empty()
     log_box.write(f"[{label}] Done: {len(results)} valid, {len(invalid)} invalid")
+    df = pd.DataFrame(results).sort_values('12Mo Return %', ascending=False).head(top_n) if results else pd.DataFrame()
+    return df, invalid
+
+t400, t600 = get_tickers()
+st.caption(f"Universe {len(t400)} + {len(t600)}")
+
+# BUTTON ALWAYS VISIBLE - disabled only while running
+button_disabled = st.session_state.running
+if st.button("Calculate Momentum 100 - Alpaca", type="primary", disabled=button_disabled):
+    if not API_KEY or not SECRET_KEY:
+        error_placeholder.error("Add Alpaca keys in Streamlit > Settings > Secrets first! See instructions.")
+        st.session_state.running = False
+    else:
+        st.session_state.running = True
+        error_placeholder.empty()
+        warning_placeholder.empty()
+        try:
+            sd = datetime.combine(run_date - timedelta(days=395), datetime.min.time())
+            ed = datetime.combine(run_date, datetime.min.time())
+            df400, bad400 = calc_alpaca(t400[:100], 40, "S&P 400", sd, ed, log_placeholder)
+            df600, bad600 = calc_alpaca(t600[:150], 60, "S&P 600", sd, ed, log_placeholder)
+            combined = pd.concat([df400, df600])
+            if combined.empty:
+                error_placeholder.error("No data returned - check Alpaca keys")
+            else:
+                combined['Weight %'] = combined['Float Mcap']/combined['Float Mcap'].sum()*100
+                combined['Position $'] = combined['Float Mcap']/combined['Float Mcap'].sum()*portfolio_value
+                combined['Shares'] = (combined['Position $']/combined['Price']).astype(int)
+                combined = combined.sort_values('Weight %', ascending=False).reset_index(drop=True)
+                # Clear warnings/errors on success
+                error_placeholder.empty()
+                warning_placeholder.empty()
+                log_placeholder.empty()
+                st.success(f"Ready - {len(combined)} stocks")
+                st.dataframe(combined[['Ticker','Price','12Mo Return %','Weight %','Position $','Shares']], use_container_width=True)
+                with st.expander(f"Invalid tickers: {len(bad400+bad600)}"):
+                    st.dataframe(pd.DataFrame(bad400+bad600, columns=["Ticker - Reason"]), use_container_width=True)
+                st.download_button("Download CSV", combined.to_csv(index=False).encode('utf-8'), f"momentum100_{run_date}.csv", "text/csv", type="primary")
+        except Exception as e:
+            error_placeholder.error(f"Error: {e}")
+        finally:
+            st.session_state.running = False
+            st.rerun()
