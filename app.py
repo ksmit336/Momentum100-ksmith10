@@ -56,8 +56,8 @@ if st.button("Calculate Momentum 100", type="primary"):
     sd = run_date - timedelta(days=395)
     ed = run_date
     with st.spinner("Running - 3-4 min first time..."):
-        df400 = calc(t400[:100], 40, "S&P 400", sd, ed) # limit to 100 for speed on iPad, change to t400 for full
-        df600 = calc(t600[:150], 60, "S&P 600", sd, ed)
+        df400 = calc(t400, 40, "S&P 400", sd, ed) # limit to 100 for speed on iPad, change to t400 for full
+        df600 = calc(t600, 60, "S&P 600", sd, ed)
         comb = pd.concat([df400, df600])
         if comb.empty:
             st.error("Yahoo throttled - wait 2 min, tap again")
