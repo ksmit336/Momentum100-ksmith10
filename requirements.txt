@@ -1,6 +1,6 @@
 streamlit
-yfinance==0.2.48
+alpaca-py==0.35.1
 pandas
 requests
 lxml
-curl-cffi
+pyarrow
