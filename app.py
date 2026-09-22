@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import date, timedelta, datetime
 import requests, io, re
 from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.enums import DataFeed
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
@@ -72,7 +73,7 @@ def calc_alpaca(tickers, top_n, label, sd, ed):
         remaining = batch[:]
         while remaining:
             try:
-                req = StockBarsRequest(symbol_or_symbols=remaining, timeframe=TimeFrame.Day, start=sd, end=ed+timedelta(days=1), adjustment='all')
+                req = StockBarsRequest(symbol_or_symbols=remaining, timeframe=TimeFrame.Day, start=sd, end=ed+timedelta(days=1), adjustment='all', feed=DataFeed.IEX)
                 bars = client.get_stock_bars(req).df
                 if bars.empty:
                     invalid.extend([f"{tk} - no bars" for tk in remaining])
