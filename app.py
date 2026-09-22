@@ -1,14 +1,18 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-from datetime import date, timedelta
-import requests, io, time, numpy as np
-import logging
-logging.getLogger('yfinance').setLevel(logging.CRITICAL)
+from datetime import date, timedelta, datetime
+import requests, io
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
 
-st.set_page_config(page_title="Momentum 100", layout="wide")
-st.title("Momentum 100")
-st.markdown("Log shows progress every 20 tickers to spot throttling")
+st.set_page_config(page_title="Momentum 100 - Alpaca", layout="wide")
+
+# State to disable button
+if 'running' not in st.session_state:
+    st.session_state.running = False
+
+st.title("Momentum 100 - Alpaca Fast")
 
 @st.cache_data(ttl=86400)
 def get_tickers():
@@ -24,75 +28,58 @@ def get_tickers():
         t600 = [str(t).replace('.','-').strip() for t in df2[c2].dropna().tolist()]
         return t400, t600
     except:
-        return ["CROX","ANF","MIDD","MANH"]*25, ["PRGS","GBX","HUBG","PLAB"]*38
+        return ["CROX","ANF","MIDD","MANH"]*25, ["PRGS","GBX","HUBG"]*50
+
+API_KEY = st.secrets.get("ALPACA_API_KEY", "")
+SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY", "")
+
+# Placeholders that we can clear when finished
+error_placeholder = st.empty()
+warning_placeholder = st.empty()
+log_placeholder = st.empty()
+
+if not API_KEY:
+    error_placeholder.error("Add Alpaca keys in Streamlit > Settings > Secrets first!")
+    st.stop()
+
+client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
 portfolio_value = st.sidebar.number_input("Portfolio Value $", value=250000.0, step=5000.0)
 run_date = st.date_input("List Date", value=date.today())
 
-def calc_batch(tickers, top_n, label, start_date, end_date, log_box):
-    # Batch download - ONE call for all tickers
-    log_box.write(f"[{label}] Starting batch download for {len(tickers)} tickers...")
-    try:
-        data = yf.download(tickers, start=start_date, end=end_date+timedelta(days=1), auto_adjust=True, group_by='ticker', threads=True, progress=False, timeout=60)
-    except Exception as e:
-        log_box.write(f"❌ Batch failed: {e} - falling back to slow mode")
-        return pd.DataFrame(), [f"Batch failed {e}"]
-
+def calc_alpaca(tickers, top_n, label, start_date, end_date, log_box):
     results = []
     invalid = []
-    for idx, tk in enumerate(tickers):
-        if idx % 20 == 0:
-            log_box.write(f"... {idx}/{len(tickers)} processed, {len(results)} valid so far")
+    prog = st.progress(0, text=f"Fetching {label}...")
+    for batch_idx in range(0, len(tickers), 50):
+        batch = tickers[batch_idx:batch_idx+50]
+        if batch_idx % 20 == 0:
+            log_box.write(f"[{label}] Processing {batch_idx}/{len(tickers)} - {len(results)} valid so far...")
         try:
-            if len(tickers) == 1:
-                hist = data
-            else:
-                if tk not in data.columns.get_level_values(0):
-                    invalid.append(f"{tk} - not in download")
-                    continue
-                hist = data[tk].dropna()
-            if len(hist) < 180:
-                invalid.append(f"{tk} - <180 days ({len(hist)})")
+            req = StockBarsRequest(symbol_or_symbols=batch, timeframe=TimeFrame.Day, start=start_date, end=end_date+timedelta(days=1), adjustment='all')
+            bars = client.get_stock_bars(req).df
+            if bars.empty:
+                for tk in batch:
+                    invalid.append(f"{tk} - no bars")
                 continue
-            ret = (float(hist['Close'].iloc[-1]) / float(hist['Close'].iloc[0])) - 1
-            price = float(hist['Close'].iloc[-1])
-            results.append({'Ticker': tk, 'Price': price, '12Mo Return %': ret*100, 'Float Mcap': 1e9*(1+ret)})
+            for tk in batch:
+                try:
+                    if tk not in bars.index.get_level_values(0):
+                        invalid.append(f"{tk} - not returned")
+                        continue
+                    hist = bars.loc[tk]
+                    if len(hist) < 180:
+                        invalid.append(f"{tk} - <180 days")
+                        continue
+                    ret = (float(hist['close'].iloc[-1]) / float(hist['close'].iloc[0])) - 1
+                    price = float(hist['close'].iloc[-1])
+                    results.append({'Ticker': tk, 'Price': price, '12Mo Return %': ret*100, 'Float Mcap': 1e9*(1+ret)})
+                except Exception as e:
+                    invalid.append(f"{tk} - {str(e)[:60]}")
         except Exception as e:
-            invalid.append(f"{tk} - {str(e)[:80]}")
+            warning_placeholder.warning(f"Batch {batch_idx//50+1} retry: {str(e)[:100]}")
+            for tk in batch:
+                invalid.append(f"{tk} - batch error")
+        prog.progress(min((batch_idx+50)/len(tickers), 1.0))
+    prog.empty()
     log_box.write(f"[{label}] Done: {len(results)} valid, {len(invalid)} invalid")
-    df = pd.DataFrame(results).sort_values('12Mo Return %', ascending=False).head(top_n) if results else pd.DataFrame()
-    return df, invalid
-
-t400, t600 = get_tickers()
-st.caption(f"Loaded {len(t400)} + {len(t600)}")
-
-log_container = st.container()
-
-if st.button("Calculate Momentum 100 (FAST BATCH)", type="primary"):
-    sd = run_date - timedelta(days=395)
-    ed = run_date
-    with log_container:
-        st.subheader("Yahoo Log (every 20)")
-        log_box = st.empty()
-        # Use st.write stream
-        import sys
-        from io import StringIO
-        log_area = st.container()
-
-        with log_area:
-            df400, bad400 = calc_batch(t400[:100], 40, "S&P 400", sd, ed, st)
-            df600, bad600 = calc_batch(t600[:150], 60, "S&P 600", sd, ed, st)
-
-    combined = pd.concat([df400, df600])
-    if combined.empty:
-        st.error("Yahoo still throttling - wait 3 min. This batch method usually fixes it on 2nd try.")
-        st.stop()
-    combined['Weight %'] = combined['Float Mcap']/combined['Float Mcap'].sum()*100
-    combined['Position $'] = combined['Float Mcap']/combined['Float Mcap'].sum()*portfolio_value
-    combined['Shares'] = (combined['Position $']/combined['Price']).fillna(0).replace([np.inf,-np.inf],0).astype(int)
-    combined = combined.sort_values('Weight %', ascending=False)
-    st.success(f"Ready - {len(combined)} stocks in {len(t400[:100])+len(t600[:150])} scanned")
-    st.dataframe(combined[['Ticker','Price','12Mo Return %','Weight %','Position $','Shares']], use_container_width=True)
-
-    with st.expander(f"Invalid: {len(bad400+bad600)} tickers"):
-        st.dataframe(pd.DataFrame(bad400+bad600, columns=["Reason"]), use_container_width=True)
