@@ -3,6 +3,8 @@ import yfinance as yf
 import pandas as pd
 from datetime import date, timedelta
 import requests, io, time, numpy as np
+import logging
+logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 
 st.set_page_config(page_title="Momentum 100", layout="wide")
 st.title("Momentum 100")
