@@ -54,7 +54,7 @@ API_KEY = st.secrets.get("ALPACA_API_KEY", "")
 SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY", "")
 
 t400, t600 = get_tickers()
-st.caption(f"Universe {len(t400)} + {len(t600)} | IEX feed")
+st.caption(f"Universe {len(t400)} + {len(t600)} = 1000 stocks | IEX feed - Full Scan")
 
 c1, c2 = st.columns([1, 2])
 with c1:
@@ -70,12 +70,12 @@ log_box = st.empty()
 def calc_alpaca(tickers, top_n, label, sd, ed):
     results = []
     invalid = []
-    prog = st.progress(0, text=f"Fetching {label}...")
+    prog = st.progress(0, text=f"Fetching {label} - {len(tickers)} tickers...")
     client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
     for batch_idx in range(0, len(tickers), 50):
         batch = tickers[batch_idx:batch_idx+50]
-        if batch_idx % 20 == 0:
-            log_box.write(f"{label} {batch_idx}/{len(tickers)} valid {len(results)}")
+        if batch_idx % 50 == 0:
+            log_box.write(f"{label} {batch_idx}/{len(tickers)} - Valid so far: {len(results)}")
         remaining = batch[:]
         while remaining:
             try:
@@ -110,7 +110,7 @@ def calc_alpaca(tickers, top_n, label, sd, ed):
                 if m:
                     bad_sym = m.group(1).strip().upper().split("-")[0]
                     invalid.append(f"{bad_sym} - invalid")
-                    remaining = [x for x in remaining if x!= bad_sym]
+                    remaining = [x for x in remaining if x != bad_sym]
                     if not remaining:
                         break
                     continue
@@ -128,7 +128,7 @@ def calc_alpaca(tickers, top_n, label, sd, ed):
         df = pd.DataFrame()
     return df, invalid
 
-if st.button("Calculate Momentum 100 - Alpaca", type="primary", disabled=st.session_state.running, use_container_width=True):
+if st.button("Calculate Momentum 100 - Full 1000", type="primary", disabled=st.session_state.running, use_container_width=True):
     if not API_KEY or not SECRET_KEY:
         error_box.error("Add keys in Secrets")
     else:
@@ -139,8 +139,9 @@ if st.button("Calculate Momentum 100 - Alpaca", type="primary", disabled=st.sess
         try:
             sd = datetime.combine(run_date - timedelta(days=395), datetime.min.time())
             ed = datetime.combine(run_date, datetime.min.time())
-            df400, bad400 = calc_alpaca(t400[:100], 40, "S&P 400", sd, ed)
-            df600, bad600 = calc_alpaca(t600[:150], 60, "S&P 600", sd, ed)
+            # FIXED - NO SLICING - SCANS ALL 1000
+            df400, bad400 = calc_alpaca(t400, 40, "S&P 400", sd, ed)
+            df600, bad600 = calc_alpaca(t600, 60, "S&P 600", sd, ed)
             if df400.empty and df600.empty:
                 combined = pd.DataFrame()
             else:
@@ -164,7 +165,7 @@ if st.button("Calculate Momentum 100 - Alpaca", type="primary", disabled=st.sess
 if st.session_state.result:
     combined, bad = st.session_state.result
     st.divider()
-    st.success(f"Ready - {len(combined)} stocks | ${portfolio_value:,.0f}")
+    st.success(f"Ready - {len(combined)} stocks from full {len(t400)+len(t600)} | ${portfolio_value:,.0f}")
     st.dataframe(combined[["Ticker", "Price", "12Mo Return %", "Weight %", "Position $", "Shares"]], use_container_width=True, hide_index=True, height=700)
     with st.expander(f"Invalid {len(bad)}"):
         st.dataframe(pd.DataFrame(bad, columns=["Reason"]), use_container_width=True)
